@@ -25,6 +25,7 @@ import java.util.*;
 import java.io.*;
 
 import org.im4java.process.ArrayListOutputConsumer;
+import org.im4java.process.Pipe;
 
 /**
    This class implements an image-information object. The one-argument
@@ -43,7 +44,7 @@ import org.im4java.process.ArrayListOutputConsumer;
    necessarely correct, e.g. the comment-field could be multi-line with
    colons within the comment.
    </p>
-   
+
    <p>
    An alternative to the Info-class is to use the exiftool-command and
    the wrapper for it provided by im4java.
@@ -51,7 +52,7 @@ import org.im4java.process.ArrayListOutputConsumer;
 
    @version $Revision: 1.14 $
    @author  $Author: bablokb $
- 
+
    @since 0.95
 */
 
@@ -75,7 +76,7 @@ public class  Info {
      @since 1.3.0
   */
 
-  private LinkedList<Hashtable<String,String>> iAttribList = 
+  private LinkedList<Hashtable<String,String>> iAttribList =
                                      new LinkedList<Hashtable<String,String>>();
 
   //////////////////////////////////////////////////////////////////////////////
@@ -96,16 +97,21 @@ public class  Info {
 
   //////////////////////////////////////////////////////////////////////////////
 
+    /**
+     * Identity command path
+     */
+  private String commandPath;
+
   /**
      This contstructor will automatically parse the full output
      of identify -verbose.
- 
+
      @param pImage  Source image
      @since 0.95
   */
 
   public Info(String pImage) throws InfoException {
-    getCompleteInfo(pImage);
+    this(pImage, false);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -113,26 +119,124 @@ public class  Info {
   /**
      This constructor creates an Info-object with basic or complete
      image-information (depending on the second argument).
- 
+
      @param pImage  Source image
      @param basic   Set to true for basic information, to false for complete info
      @since 1.2.0
   */
 
   public Info(String pImage, boolean basic) throws InfoException {
-
-    if (!basic) {
-      getCompleteInfo(pImage);
-    } else {
-      getBaseInfo(pImage);
-    }
+    this(pImage, basic, null);
   }
+
+    /**
+     * This contstructor will automatically parse the full output
+     * of identify -verbose.
+     *
+     * @param is Source image inputStream
+     * @throws InfoException
+     * @throws IOException
+     */
+    public Info(InputStream is) throws InfoException, IOException {
+        this(is, false);
+    }
+
+    /**
+     * This constructor creates an Info-object with basic or complete
+     * image-information (depending on the second argument).
+     *
+     * @param is Source image inputStream
+     * @param basic Set to true for basic information, to false for complete info
+     * @throws InfoException
+     * @throws IOException
+     */
+    public Info(InputStream is, boolean basic) throws InfoException, IOException {
+        this(is, basic, null);
+    }
+
+    /**
+     * This constructor creates an Info-object with basic or complete
+     * image-information (depending on the second argument).
+     * 
+     * @param pImage
+     *            Source image
+     * @param basic
+     *            Set to true for basic information, to false for complete info
+     * @param commandPath
+     * @throws InfoException
+     */
+    public Info(String pImage, boolean basic, String commandPath) throws InfoException {
+        this.commandPath = commandPath;
+        if (!basic) {
+            getCompleteInfo(pImage);
+        } else {
+            getBaseInfo(pImage);
+        }
+    }
+
+    /**
+     * This constructor creates an Info-object with basic or complete
+     * image-information (depending on the second argument).
+     *
+     * @param is Source image inputStream
+     * @param basic Set to true for basic information, to false for complete info
+     * @param commandPath Identity command path
+     * @throws InfoException
+     * @throws IOException
+     */
+    public Info(InputStream is, boolean basic, String commandPath) throws InfoException, IOException {
+        this.commandPath = commandPath;
+        if (!basic) {
+            getCompleteInfo(is);
+        } else {
+            getBaseInfo(is);
+        }
+    }
+
+    /**
+     * new an IdentifyCmd Object with a commandPath
+     * 
+     * @return
+     */
+    private IdentifyCmd getIdentityCmd() {
+        IdentifyCmd identify = new IdentifyCmd();
+        if (commandPath != null) {
+            identify.setSearchPath(commandPath);
+        }
+        return identify;
+    }
+
+
+    /**
+     * Query complete image-information.
+     *
+     * @param is source image inputStream
+     * @throws InfoException
+     */
+    private void getCompleteInfo(InputStream is) throws InfoException, IOException {
+        IMOperation op = new IMOperation();
+        op.verbose();
+        op.addImage("-");
+        Pipe pipe = new Pipe(is, null);
+        try {
+            IdentifyCmd identify = getIdentityCmd();
+            identify.setInputProvider(pipe);
+            ArrayListOutputConsumer output = new ArrayListOutputConsumer();
+            identify.setOutputConsumer(output);
+            identify.run(op);
+            resolveCompleteInfo(output.getOutput());
+        } catch (Exception ex) {
+            throw new InfoException(ex);
+        } finally {
+            is.close();
+        }
+    }
 
   //////////////////////////////////////////////////////////////////////////////
 
   /**
      Query complete image-information.
- 
+
      @param pImage  Source image
      @since 1.2.0
   */
@@ -143,42 +247,46 @@ public class  Info {
     op.addImage(pImage);
 
     try {
-      IdentifyCmd identify = new IdentifyCmd();
+      IdentifyCmd identify = getIdentityCmd();
       ArrayListOutputConsumer output = new ArrayListOutputConsumer();
       identify.setOutputConsumer(output);
       identify.run(op);
-      ArrayList<String> cmdOutput = output.getOutput();
+      resolveCompleteInfo(output.getOutput());
+    } catch (Exception ex) {
+      throw new InfoException(ex);
+    }
+  }
 
+    /**
+     * @param cmdOutput
+     */
+  private void resolveCompleteInfo(ArrayList<String> cmdOutput) {
       StringBuilder lineAccu = new StringBuilder(80);
       for (String line:cmdOutput) {
-	if (line.length() == 0) {
-	  // accumulate empty line as part of current attribute
-	  lineAccu.append("\n\n");
-	} else if (line.indexOf(':') == -1) {
-	  // interpret this as a continuation-line of the current attribute
-	  lineAccu.append("\n").append(line);
-	} else if (lineAccu.length() > 0) {
-	  // new attribute, process old attribute first
-	  parseLine(lineAccu.toString());
-	  lineAccu = new StringBuilder(80);
-	  lineAccu.append(line);
-	} else {
-          // new attribute, but nothing old to process
-	  lineAccu.append(line);
-	}
+          if (line.length() == 0) {
+              // accumulate empty line as part of current attribute
+              lineAccu.append("\n\n");
+          } else if (line.indexOf(':') == -1) {
+              // interpret this as a continuation-line of the current attribute
+              lineAccu.append("\n").append(line);
+          } else if (lineAccu.length() > 0) {
+              // new attribute, process old attribute first
+              parseLine(lineAccu.toString());
+              lineAccu = new StringBuilder(80);
+              lineAccu.append(line);
+          } else {
+              // new attribute, but nothing old to process
+              lineAccu.append(line);
+          }
       }
       // process last item
       if (lineAccu.length() > 0) {
-	parseLine(lineAccu.toString());
+          parseLine(lineAccu.toString());
       }
 
       // finish and add last hashtable to linked-list
       addBaseInfo();
       iAttribList.add(iAttributes);
-      
-    } catch (Exception ex) {
-      throw new InfoException(ex);
-    }
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -258,7 +366,7 @@ public class  Info {
 
   /**
      Query basic image-information.
- 
+
      @param pImage  Source image
      @since 1.2.0
   */
@@ -272,30 +380,66 @@ public class  Info {
 
     try {
       // execute ...
-      IdentifyCmd identify = new IdentifyCmd();
+      IdentifyCmd identify = getIdentityCmd();
       ArrayListOutputConsumer output = new ArrayListOutputConsumer();
       identify.setOutputConsumer(output);
       identify.run(op);
 
       // ... and parse result
-      ArrayList<String> cmdOutput = output.getOutput();
-      Iterator<String> iter = cmdOutput.iterator();
-
-      iAttributes = new Hashtable<String,String>();
-      iAttributes.put("Format",iter.next());
-      iAttributes.put("Width",iter.next());
-      iAttributes.put("Height",iter.next());
-      iAttributes.put("Geometry",iter.next());
-      iAttributes.put("PageWidth",iter.next());
-      iAttributes.put("PageHeight",iter.next());
-      iAttributes.put("PageGeometry",iter.next());
-      iAttributes.put("Depth",iter.next());
-      iAttributes.put("Class",iter.next());
-      iAttribList.add(iAttributes);
+      resolveBaseInfo(output.getOutput());
     } catch (Exception ex) {
       throw new InfoException(ex);
     }
   }
+
+    //////////////////////////////////////////////////////////////////////////////
+
+    /**
+     Query basic image-information.
+
+     @param is  Source image inputStream
+     */
+    private void getBaseInfo(InputStream is) throws InfoException, IOException {
+        IMOperation op = new IMOperation();
+        op.ping();
+        op.format("%m\n%w\n%h\n%g\n%W\n%H\n%G\n%z\n%r");
+        op.addImage("-");
+        Pipe pipe = new Pipe(is, null);
+        try {
+            // execute ...
+            IdentifyCmd identify = getIdentityCmd();
+            identify.setInputProvider(pipe);
+            ArrayListOutputConsumer output = new ArrayListOutputConsumer();
+            identify.setOutputConsumer(output);
+            identify.run(op);
+            // ... and parse result
+            resolveBaseInfo(output.getOutput());
+        } catch (Exception ex) {
+            throw new InfoException(ex);
+        } finally {
+            is.close();
+        }
+    }
+
+    /**
+     * @param cmdOutput
+     */
+    private void resolveBaseInfo(ArrayList<String> cmdOutput) {
+        Iterator<String> iter = cmdOutput.iterator();
+
+        iAttributes = new Hashtable<String,String>();
+        iAttributes.put("Format",iter.next());
+        iAttributes.put("Width",iter.next());
+        iAttributes.put("Height",iter.next());
+        iAttributes.put("Geometry",iter.next());
+        iAttributes.put("PageWidth",iter.next());
+        iAttributes.put("PageHeight",iter.next());
+        iAttributes.put("PageGeometry",iter.next());
+        iAttributes.put("Depth",iter.next());
+        iAttributes.put("Class",iter.next());
+        iAttribList.add(iAttributes);
+    }
+
 
   //////////////////////////////////////////////////////////////////////////////
 
