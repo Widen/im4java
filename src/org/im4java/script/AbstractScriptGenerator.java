@@ -271,6 +271,10 @@ abstract public class AbstractScriptGenerator implements ScriptGenerator {
       // dump the line and re-init the line-buffer
       flushLine(false);
       iLineBuffer.append(pBuf);
+	/* Without the following line (appending the empty space) sometimes it ignores spacing between previous variable
+	 * and the next command. Example:- -resize "1024x681"-format "jpg".  notice no space between "1024x681" and -format.
+	 */
+      iLineBuffer.append(" "); 
     } else {
       // the given buffer still fits, so append to the line
       iLineBuffer.append(pBuf);
